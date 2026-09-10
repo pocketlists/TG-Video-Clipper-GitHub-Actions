@@ -5,8 +5,10 @@ on:
   workflow_dispatch:
 
   push:
+
     branches:
       - main
+
 
 concurrency:
 
@@ -26,18 +28,19 @@ jobs:
 
     steps:
 
-      # --------------------------------
-      # Checkout
-      # --------------------------------
+
+      # ==========================================
+      # CHECKOUT
+      # ==========================================
 
       - name: Checkout repository
 
         uses: actions/checkout@v4
 
 
-      # --------------------------------
-      # Python
-      # --------------------------------
+      # ==========================================
+      # PYTHON
+      # ==========================================
 
       - name: Setup Python
 
@@ -48,62 +51,196 @@ jobs:
           python-version: "3.10"
 
 
-      # --------------------------------
-      # System packages
-      # --------------------------------
+      # ==========================================
+      # INSTALL SYSTEM DEPENDENCIES
+      # ==========================================
 
       - name: Install dependencies
 
         run: |
 
+          set -e
+
           sudo apt-get update
 
           sudo apt-get install -y \
             git \
+            git-lfs \
             cmake \
             g++ \
+            build-essential \
             make \
+            pkg-config \
             zlib1g-dev \
             libssl-dev \
             gperf \
-            ffmpeg
+            ffmpeg \
+            curl \
+            ca-certificates
 
 
-      # --------------------------------
-      # Build Telegram Local Bot API
-      # --------------------------------
+      # ==========================================
+      # SHOW SYSTEM INFORMATION
+      # ==========================================
+
+      - name: Check runner
+
+        run: |
+
+          echo "================================"
+          echo "CPU"
+          echo "================================"
+
+          nproc
+
+          echo "================================"
+          echo "RAM"
+          echo "================================"
+
+          free -h
+
+          echo "================================"
+          echo "DISK"
+          echo "================================"
+
+          df -h
+
+
+      # ==========================================
+      # CLEAN OLD SOURCE
+      # ==========================================
+
+      - name: Clean old Telegram source
+
+        run: |
+
+          rm -rf telegram-bot-api
+
+          rm -rf telegram-data
+
+          rm -rf telegram-build
+
+
+      # ==========================================
+      # CLONE TELEGRAM BOT API
+      # WITH TDLib SUBMODULE
+      # ==========================================
+
+      - name: Clone Telegram Bot API
+
+        run: |
+
+          set -e
+
+          echo "Cloning Telegram Bot API..."
+
+          git clone \
+            --recursive \
+            --depth 1 \
+            https://github.com/tdlib/telegram-bot-api.git \
+            telegram-bot-api
+
+
+          cd telegram-bot-api
+
+
+          echo "Updating submodules..."
+
+          git submodule sync --recursive
+
+          git submodule update \
+            --init \
+            --recursive
+
+
+          echo "Checking TDLib..."
+
+
+          if [ ! -f "td/CMakeLists.txt" ]; then
+
+            echo "ERROR: TDLib CMakeLists.txt is missing."
+
+            echo "Directory listing:"
+
+            ls -la
+
+            echo "TD directory:"
+
+            ls -la td || true
+
+            exit 1
+
+          fi
+
+
+          echo "================================"
+          echo "TDLib found successfully"
+          echo "================================"
+
+          ls -la td | head -30
+
+
+      # ==========================================
+      # BUILD TELEGRAM LOCAL BOT API
+      # ==========================================
 
       - name: Build Telegram Local Bot API
 
         run: |
 
-          git clone \
-            --depth 1 \
-            https://github.com/tdlib/telegram-bot-api.git
+          set -e
 
-          cd telegram-bot-api
+          echo "Starting CMake build..."
 
-          mkdir build
 
-          cd build
+          mkdir -p telegram-build
+
 
           cmake \
-            -DCMAKE_BUILD_TYPE=Release \
-            ..
+            -S telegram-bot-api \
+            -B telegram-build \
+            -DCMAKE_BUILD_TYPE=Release
+
+
+          echo "CMake configuration successful."
+
+
+          echo "Building Telegram Bot API..."
+
 
           cmake \
-            --build . \
+            --build telegram-build \
             --target telegram-bot-api \
-            -j2
+            --parallel 2
+
+
+          echo "Build completed."
+
+
+          echo "Checking executable..."
+
+
+          ls -lh \
+            telegram-build/telegram-bot-api
+
 
           sudo cp \
-            bin/telegram-bot-api \
+            telegram-build/telegram-bot-api \
             /usr/local/bin/telegram-bot-api
 
 
-      # --------------------------------
-      # Python packages
-      # --------------------------------
+          sudo chmod +x \
+            /usr/local/bin/telegram-bot-api
+
+
+          telegram-bot-api \
+            --help \
+            | head -40
+
+
+      # ==========================================
+      # PYTHON PACKAGES
+      # ==========================================
 
       - name: Install Python packages
 
@@ -116,9 +253,9 @@ jobs:
             -r requirements.txt
 
 
-      # --------------------------------
-      # Start Local Bot API
-      # --------------------------------
+      # ==========================================
+      # START LOCAL TELEGRAM BOT API
+      # ==========================================
 
       - name: Start Local Telegram API
 
@@ -128,43 +265,130 @@ jobs:
 
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+
         run: |
+
+          set -e
+
+
+          if [ -z "$TELEGRAM_API_ID" ]; then
+
+            echo "ERROR: TELEGRAM_API_ID secret is missing."
+
+            exit 1
+
+          fi
+
+
+          if [ -z "$TELEGRAM_API_HASH" ]; then
+
+            echo "ERROR: TELEGRAM_API_HASH secret is missing."
+
+            exit 1
+
+          fi
+
+
+          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+
+            echo "ERROR: TELEGRAM_BOT_TOKEN secret is missing."
+
+            exit 1
+
+          fi
+
 
           mkdir -p telegram-data
 
-          telegram-bot-api \
-            --api-id="${TELEGRAM_API_ID}" \
-            --api-hash="${TELEGRAM_API_HASH}" \
+
+          echo "Starting Telegram Local Bot API..."
+
+
+          nohup telegram-bot-api \
+            --api-id="$TELEGRAM_API_ID" \
+            --api-hash="$TELEGRAM_API_HASH" \
             --local \
             --http-port=8081 \
-            --dir="$(pwd)/telegram-data" \
+            --dir="$PWD/telegram-data" \
             > telegram-api.log 2>&1 &
+
 
           echo $! > telegram-api.pid
 
-          echo "Waiting for Telegram Local Bot API..."
 
-          for i in {1..60}; do
+          echo "Telegram Local Bot API PID:"
+          cat telegram-api.pid
+
+
+          echo "Waiting for Local Bot API..."
+
+
+          READY=0
+
+
+          for i in $(seq 1 90); do
+
+
+            if ! kill -0 \
+              "$(cat telegram-api.pid)" \
+              2>/dev/null; then
+
+              echo "Telegram Local Bot API process stopped."
+
+              cat telegram-api.log || true
+
+              exit 1
+
+            fi
+
 
             if curl \
-              -s \
-              http://127.0.0.1:8081/ \
-              > /dev/null; then
+              --silent \
+              --show-error \
+              --fail \
+              "http://127.0.0.1:8081/bot${TELEGRAM_BOT_TOKEN}/getMe" \
+              > /tmp/getme.json; then
 
-              echo "Telegram Local Bot API started."
+
+              echo "================================"
+              echo "Telegram Local Bot API READY"
+              echo "================================"
+
+
+              cat /tmp/getme.json
+
+
+              READY=1
 
               break
 
             fi
+
 
             sleep 2
 
           done
 
 
-      # --------------------------------
-      # Start Python bot
-      # --------------------------------
+          if [ "$READY" -ne 1 ]; then
+
+            echo "Local Telegram Bot API did not become ready."
+
+            echo "================================"
+            echo "Telegram API LOG"
+            echo "================================"
+
+            cat telegram-api.log || true
+
+            exit 1
+
+          fi
+
+
+      # ==========================================
+      # START BOT
+      # ==========================================
 
       - name: Start Video Clipper Bot
 
@@ -177,6 +401,8 @@ jobs:
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
 
           TELEGRAM_LOCAL_API: http://127.0.0.1:8081
+
+          ALLOWED_USER_ID: ${{ secrets.ALLOWED_USER_ID }}
 
         run: |
 
