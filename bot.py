@@ -3,16 +3,17 @@ import subprocess
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# GitHub Secrets (Environment variables) se credentials fetch karna
-API_ID = os.environ.get("API_ID")
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# Yahan par names aapke GitHub secrets (1000828221.jpg) ke hisaab se update kar diye hain
+API_ID = os.environ.get("TELEGRAM_API_ID")
+API_HASH = os.environ.get("TELEGRAM_API_HASH")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# Agar variables miss hote hain, toh GitHub Actions logs me error dikh jayega
 if not all([API_ID, API_HASH, BOT_TOKEN]):
-    raise ValueError("Missing API_ID, API_HASH, or BOT_TOKEN. Please set them in GitHub Secrets.")
+    raise ValueError("Missing Credentials. Please check GitHub Secrets.")
 
-# API_ID ko integer me convert karna zaroori hai
+app = Client("video_clipper_bot", api_id=int(API_ID), api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# ... (baaki ka poora code bilkul same rahega jo pehle diya tha) ...
 app = Client("video_clipper_bot", api_id=int(API_ID), api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # User state track karne ke liye (kaunse user ne kitne videos bheje hain)
