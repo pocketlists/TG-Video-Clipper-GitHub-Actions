@@ -1,0 +1,131 @@
+# Telegram Video Clipper Bot — GitHub Actions
+
+A simple Telegram bot that accepts forwarded videos in order and joins them into one new MP4 using FFmpeg.
+
+## What it does
+
+1. `/start`
+2. Forward/send Video 1
+3. Forward/send Video 2
+4. Send `/done`
+5. Bot creates `final_clip.mp4` and sends it back.
+
+You can also send 3, 4, 5... videos and then `/done`.
+
+## Important limitation
+
+With the normal Telegram Bot API, bots have a roughly 20 MB limit when downloading files through `getFile`. This repository therefore works for videos within that limit.
+
+For larger videos, use a Telegram Local Bot API server or a Telegram user-client implementation. GitHub Actions alone is not a good place to run a permanent Local Bot API service.
+
+## GitHub setup
+
+### 1. Create a bot
+
+Open Telegram and talk to `@BotFather`.
+
+Create a bot with `/newbot` and copy the token.
+
+### 2. Create the GitHub repository
+
+Upload this repository exactly as shown:
+
+```text
+TG-Video-Clipper/
+├── bot.py
+├── requirements.txt
+├── .gitignore
+├── README.md
+└── .github/
+    └── workflows/
+        └── run-bot.yml
+```
+
+### 3. Add the secret
+
+GitHub repository:
+
+`Settings → Secrets and variables → Actions → New repository secret`
+
+Name:
+
+```text
+TELEGRAM_BOT_TOKEN
+```
+
+Value:
+
+```text
+YOUR_BOT_TOKEN
+```
+
+Never put the bot token directly into `bot.py`.
+
+### 4. Start it
+
+Go to:
+
+`Actions → Run Telegram Video Clipper → Run workflow`
+
+Then open your bot in Telegram and send:
+
+```text
+/start
+```
+
+## Joining
+
+For two videos:
+
+```text
+Video 1
+Video 2
+/done
+```
+
+For multiple videos:
+
+```text
+Video 1
+Video 2
+Video 3
+Video 4
+/done
+```
+
+The order received by the bot is the order used in the final video.
+
+## Why FFmpeg re-encodes
+
+The bot normalizes videos to:
+
+- H.264 video
+- AAC audio
+- 30 FPS
+- even dimensions
+- yuv420p
+- MP4 container
+
+This makes joining videos with different resolutions/FPS/audio much more reliable.
+
+The final join itself uses FFmpeg's concat demuxer with stream copy after normalization.
+
+## GitHub Actions limitation
+
+This workflow uses long polling. A GitHub-hosted runner is temporary, so the bot is not a true 24/7 service. The workflow eventually stops because GitHub Actions jobs have a runtime limit.
+
+For a permanent bot, run the same Python program on a VPS, Render/Railway-like service, or another always-on host.
+
+## Future upgrade
+
+A larger-file version can be built using:
+
+- Telegram Local Bot API
+- Pyrogram/Telethon user client
+- automatic video compression
+- progress updates
+- automatic `/done` after exactly 2 videos
+- per-user queues
+- thumbnails
+- configurable output quality
+- trim/cut commands
