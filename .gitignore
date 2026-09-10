@@ -1,11 +1,11 @@
 __pycache__/
 *.pyc
+*.pyo
 
 .env
 
+telegram-bot-api/
 telegram-data/
-telegram-api.log
-telegram-api.pid
 
 *.mp4
 *.mkv
@@ -14,4 +14,5 @@ telegram-api.pid
 *.webm
 *.m4v
 
-*.tmp
+*.log
+*.pid
