@@ -1,671 +1,97 @@
-import asyncio
-import logging
 import os
-import shutil
 import subprocess
-import tempfile
-from pathlib import Path
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+# GitHub Secrets (Environment variables) se credentials fetch karna
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+# Agar variables miss hote hain, toh GitHub Actions logs me error dikh jayega
+if not all([API_ID, API_HASH, BOT_TOKEN]):
+    raise ValueError("Missing API_ID, API_HASH, or BOT_TOKEN. Please set them in GitHub Secrets.")
 
-LOCAL_API = os.environ.get(
-    "TELEGRAM_LOCAL_API",
-    "http://127.0.0.1:8081"
-)
+# API_ID ko integer me convert karna zaroori hai
+app = Client("video_clipper_bot", api_id=int(API_ID), api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-ALLOWED_USER_ID = os.environ.get("ALLOWED_USER_ID")
+# User state track karne ke liye (kaunse user ne kitne videos bheje hain)
+user_videos = {}
 
-if ALLOWED_USER_ID:
-    ALLOWED_USER_ID = int(ALLOWED_USER_ID)
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-)
-
-logger = logging.getLogger("TG-Video-Clipper")
-
-
-queues = {}
-locks = {}
-
-
-def get_lock(chat_id):
-
-    if chat_id not in locks:
-        locks[chat_id] = asyncio.Lock()
-
-    return locks[chat_id]
-
-
-def is_allowed(update):
-
-    if not ALLOWED_USER_ID:
-        return True
-
-    if not update.effective_user:
-        return False
-
-    return update.effective_user.id == ALLOWED_USER_ID
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not is_allowed(update):
-        await update.message.reply_text(
-            "❌ You are not authorized to use this bot."
-        )
-        return
-
-    await update.message.reply_text(
-        "🎬 Telegram Video Clipper\n\n"
-        "✅ Large-file mode enabled\n\n"
-        "Send or forward videos in the order you want.\n\n"
-        "Example:\n"
-        "Video 1\n"
-        "Video 2\n"
-        "/done\n\n"
-        "Commands:\n"
-        "/status - show queue\n"
-        "/clear - clear queue\n"
-        "/done - join videos"
+@app.on_message(filters.command("start"))
+async def start(client, message: Message):
+    await message.reply_text(
+        "Hello! Main ek Video Clipper Bot hoon.\n"
+        "Mujhe 2 video clips forward ya send karein, aur main unhe FFmpeg se merge karke aapko de dunga."
     )
 
+@app.on_message(filters.video)
+async def handle_video(client, message: Message):
+    user_id = message.from_user.id
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if user_id not in user_videos:
+        user_videos[user_id] = []
 
-    if not is_allowed(update):
-        return
+    # Video message ko list me save karein
+    user_videos[user_id].append(message)
 
-    chat_id = update.effective_chat.id
+    if len(user_videos[user_id]) == 1:
+        await message.reply_text("✅ Pehla video mil gaya! Ab doosra video send ya forward karein.")
+    
+    elif len(user_videos[user_id]) == 2:
+        status_msg = await message.reply_text("⏳ Dono videos mil gaye. Processing shuru ho rahi hai...")
 
-    videos = queues.get(chat_id, [])
-
-    await update.message.reply_text(
-        f"📦 Videos in queue: {len(videos)}"
-    )
-
-
-async def clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not is_allowed(update):
-        return
-
-    chat_id = update.effective_chat.id
-
-    videos = queues.pop(chat_id, [])
-
-    for video in videos:
+        vid1_path, vid2_path, output_path = None, None, None
 
         try:
-            shutil.rmtree(
-                video.parent,
-                ignore_errors=True
-            )
-        except Exception:
-            pass
-
-    await update.message.reply_text(
-        "🗑️ Queue cleared."
-    )
-
-
-async def receive_video(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not is_allowed(update):
-
-        await update.message.reply_text(
-            "❌ You are not authorized to use this bot."
-        )
-
-        return
-
-
-    message = update.message
-
-    chat_id = update.effective_chat.id
-
-    telegram_file = None
-
-    filename = "video.mp4"
-
-
-    # Normal Telegram video
-    if message.video:
-
-        telegram_file = await message.video.get_file()
-
-        filename = (
-            message.video.file_name
-            or "video.mp4"
-        )
-
-
-    # Video sent as document
-    elif message.document:
-
-        mime = (
-            message.document.mime_type
-            or ""
-        )
-
-        if not mime.startswith("video/"):
-            return
-
-        telegram_file = (
-            await message.document.get_file()
-        )
-
-        filename = (
-            message.document.file_name
-            or "video.mp4"
-        )
-
-    else:
-
-        return
-
-
-    async with get_lock(chat_id):
-
-        work_dir = Path(
-            tempfile.mkdtemp(
-                prefix="tgclip_"
-            )
-        )
-
-
-        filename = Path(
-            filename
-        ).name
-
-
-        valid_extensions = (
-            ".mp4",
-            ".mkv",
-            ".mov",
-            ".avi",
-            ".webm",
-            ".m4v",
-        )
-
-
-        if not filename.lower().endswith(
-            valid_extensions
-        ):
-
-            filename += ".mp4"
-
-
-        video_path = (
-            work_dir / filename
-        )
-
-
-        try:
-
-            await update.message.reply_text(
-                "⬇️ Downloading video...\n"
-                "Large files may take some time."
-            )
-
-
-            await telegram_file.download_to_drive(
-                custom_path=str(video_path)
-            )
-
-
-        except Exception as error:
-
-            logger.exception(
-                "Download failed"
-            )
-
-            shutil.rmtree(
-                work_dir,
-                ignore_errors=True
-            )
-
-            await update.message.reply_text(
-                "❌ Video download failed.\n\n"
-                f"Error: {error}"
-            )
-
-            return
-
-
-        queues.setdefault(
-            chat_id,
-            []
-        ).append(video_path)
-
-
-        number = len(
-            queues[chat_id]
-        )
-
-
-        await update.message.reply_text(
-            f"✅ Video {number} received.\n\n"
-            f"📦 Queue: {number} video(s)\n\n"
-            "Send another video or use /done."
-        )
-
-
-def normalize_video(
-    source,
-    destination
-):
-
-    command = [
-
-        "ffmpeg",
-
-        "-y",
-
-        "-hide_banner",
-
-        "-loglevel",
-        "error",
-
-        "-i",
-        str(source),
-
-        "-map",
-        "0:v:0",
-
-        "-map",
-        "0:a:0?",
-
-        "-vf",
-        "scale=trunc(iw/2)*2:trunc(ih/2)*2,"
-        "format=yuv420p",
-
-        "-r",
-        "30",
-
-        "-c:v",
-        "libx264",
-
-        "-preset",
-        "veryfast",
-
-        "-crf",
-        "23",
-
-        "-c:a",
-        "aac",
-
-        "-b:a",
-        "128k",
-
-        "-ar",
-        "48000",
-
-        "-movflags",
-        "+faststart",
-
-        str(destination),
-    ]
-
-
-    subprocess.run(
-        command,
-        check=True
-    )
-
-
-def join_videos(
-    videos,
-    output
-):
-
-    normalized_dir = (
-        output.parent /
-        "normalized"
-    )
-
-    normalized_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-
-    normalized = []
-
-
-    for index, video in enumerate(videos):
-
-        destination = (
-            normalized_dir /
-            f"part_{index:04d}.mp4"
-        )
-
-        logger.info(
-            "Normalizing %s",
-            video
-        )
-
-        normalize_video(
-            video,
-            destination
-        )
-
-        normalized.append(
-            destination
-        )
-
-
-    concat_file = (
-        normalized_dir /
-        "concat.txt"
-    )
-
-
-    with concat_file.open(
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        for video in normalized:
-
-            path = (
-                video
-                .resolve()
-                .as_posix()
-            )
-
-            path = path.replace(
-                "'",
-                "'\\''"
-            )
-
-            file.write(
-                f"file '{path}'\n"
-            )
-
-
-    command = [
-
-        "ffmpeg",
-
-        "-y",
-
-        "-hide_banner",
-
-        "-loglevel",
-        "error",
-
-        "-f",
-        "concat",
-
-        "-safe",
-        "0",
-
-        "-i",
-        str(concat_file),
-
-        "-c",
-        "copy",
-
-        "-movflags",
-        "+faststart",
-
-        str(output),
-    ]
-
-
-    logger.info(
-        "Joining videos..."
-    )
-
-
-    subprocess.run(
-        command,
-        check=True
-    )
-
-
-async def done(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    if not is_allowed(update):
-        return
-
-
-    chat_id = update.effective_chat.id
-
-
-    async with get_lock(chat_id):
-
-        videos = queues.pop(
-            chat_id,
-            []
-        )
-
-
-        if len(videos) < 2:
-
-            for video in videos:
-
-                shutil.rmtree(
-                    video.parent,
-                    ignore_errors=True
+            # Videos download kar rahe hain
+            await status_msg.edit_text("📥 Pehla video download ho raha hai...")
+            vid1_path = await user_videos[user_id][0].download(file_name=f"downloads/{user_id}_1.mp4")
+
+            await status_msg.edit_text("📥 Doosra video download ho raha hai...")
+            vid2_path = await user_videos[user_id][1].download(file_name=f"downloads/{user_id}_2.mp4")
+
+            output_path = f"downloads/{user_id}_merged.mp4"
+            await status_msg.edit_text("⚙️ FFmpeg se videos merge ho rahe hain... Isme thoda time lag sakta hai.")
+
+            # FFmpeg Command (Dono clips ko aapas me jodna)
+            command = [
+                "ffmpeg", "-y",
+                "-i", vid1_path,
+                "-i", vid2_path,
+                "-filter_complex", "[0:v][0:a][1:v][1:a]concat=n=2:v=1:a=1[outv][outa]",
+                "-map", "[outv]",
+                "-map", "[outa]",
+                output_path
+            ]
+
+            process = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+            if process.returncode != 0:
+                print(process.stderr.decode())
+                await status_msg.edit_text("❌ Merging fail ho gayi. (Check karein ki dono videos me Audio aur Video streams mojud hon).")
+            else:
+                await status_msg.edit_text("📤 Merge complete! Video upload ho raha hai...")
+                
+                # Direct reply use kar rahe hain, isme alag se ID dene ki zaroorat nahi hai
+                await message.reply_video(
+                    video=output_path, 
+                    caption="🎬 Ye raha aapka merged video!"
                 )
+                await status_msg.delete()
 
-
-            await update.message.reply_text(
-                "⚠️ At least 2 videos are required."
-            )
-
-            return
-
-
-        output_dir = Path(
-            tempfile.mkdtemp(
-                prefix="tgclip_output_"
-            )
-        )
-
-
-        output = (
-            output_dir /
-            "final_clip.mp4"
-        )
-
-
-        status = await update.message.reply_text(
-            f"⚙️ Processing {len(videos)} videos...\n\n"
-            "Large videos can take a while."
-        )
-
-
-        try:
-
-            await asyncio.to_thread(
-                join_videos,
-                videos,
-                output
-            )
-
-
-            await status.edit_text(
-                "📤 Uploading final video..."
-            )
-
-
-            with output.open(
-                "rb"
-            ) as file:
-
-                await update.message.reply_video(
-                    video=file,
-                    caption=(
-                        "✅ Final video ready!\n\n"
-                        f"Joined videos: {len(videos)}"
-                    ),
-                    supports_streaming=True
-                )
-
-
-            await status.edit_text(
-                "✅ Processing complete."
-            )
-
-
-        except subprocess.CalledProcessError:
-
-            logger.exception(
-                "FFmpeg failed"
-            )
-
-            await status.edit_text(
-                "❌ FFmpeg failed while processing the videos."
-            )
-
-
-        except Exception as error:
-
-            logger.exception(
-                "Unexpected error"
-            )
-
-            await status.edit_text(
-                "❌ Processing failed.\n\n"
-                f"{error}"
-            )
-
+        except Exception as e:
+            await status_msg.edit_text(f"⚠️ Ek error aagaya: {e}")
 
         finally:
-
-            for video in videos:
-
-                shutil.rmtree(
-                    video.parent,
-                    ignore_errors=True
-                )
-
-
-            shutil.rmtree(
-                output_dir,
-                ignore_errors=True
-            )
-
-
-async def error_handler(
-    update,
-    context
-):
-
-    logger.error(
-        "Telegram error: %s",
-        context.error
-    )
-
-
-def main():
-
-    logger.info(
-        "Starting Telegram Video Clipper..."
-    )
-
-    logger.info(
-        "Local API: %s",
-        LOCAL_API
-    )
-
-
-    application = (
-        Application.builder()
-
-        .token(
-            BOT_TOKEN
-        )
-
-        .base_url(
-            f"{LOCAL_API}/bot"
-        )
-
-        .base_file_url(
-            f"{LOCAL_API}/file/bot"
-        )
-
-        .build()
-    )
-
-
-    application.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-
-    application.add_handler(
-        CommandHandler(
-            "status",
-            status
-        )
-    )
-
-
-    application.add_handler(
-        CommandHandler(
-            "clear",
-            clear
-        )
-    )
-
-
-    application.add_handler(
-        CommandHandler(
-            "done",
-            done
-        )
-    )
-
-
-    application.add_handler(
-        MessageHandler(
-            filters.VIDEO
-            |
-            filters.Document.VIDEO,
-            receive_video
-        )
-    )
-
-
-    application.add_error_handler(
-        error_handler
-    )
-
-
-    logger.info(
-        "Bot is online."
-    )
-
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
-
+            # Kaam hone ke baad temporary list aur files delete karna taaki storage clear rahe
+            user_videos[user_id] = []
+            for f in [vid1_path, vid2_path, output_path]:
+                if f and os.path.exists(f):
+                    os.remove(f)
 
 if __name__ == "__main__":
-
-    main()
+    if not os.path.exists("downloads"):
+        os.makedirs("downloads")
+    print("Bot is running...")
+    app.run()
